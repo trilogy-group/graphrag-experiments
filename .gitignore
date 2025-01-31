@@ -172,6 +172,3 @@ cython_debug/
 
 # Project specific
 /tmp/
-*.md
-!README.md
-!architecture.md

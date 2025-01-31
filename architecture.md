@@ -118,6 +118,10 @@ graph TD
 
 ## Future Enhancements
 
-The current implementation of the system incorporates a basic temporal knowledge graph (TKG) by associating temporal metadata, such as document ingestion dates, with nodes to track when information was added to the graph. While this provides foundational temporal context for data provenance and versioning, it does not yet model time as an inherent part of the domain knowledge itself.
+The system has been enhanced with temporal knowledge graph capabilities, which are documented in detail in [TKG.md](TKG.md). This includes:
 
-To evolve into a true TKG, future enhancements would involve embedding temporal semantics directly into the graph's structure, such as timestamping edges with validity intervals (e.g., "CEO of Company X from 2015–2023"), enabling dynamic node attributes that reflect changes over time (e.g., fluctuating stock prices), and representing time-bound events as first-class entities (e.g., "Product Launch on 2024-05-01"). These improvements would allow the system to support complex temporal reasoning, such as querying historical states of relationships, analyzing trends, or inferring causality across time, transforming the graph into a robust tool for understanding evolving real-world dynamics.
+- Document date tracking and temporal metadata
+- Age-based weighting for both visualization and query relevance
+- Foundation for future temporal reasoning capabilities
+
+For more information about the temporal knowledge graph implementation and roadmap, see [TKG.md](TKG.md).

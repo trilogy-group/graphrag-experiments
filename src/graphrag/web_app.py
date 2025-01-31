@@ -16,36 +16,28 @@ from dotenv import load_dotenv
 
 from llama_index.core import (
     SimpleDirectoryReader,
+    KnowledgeGraphIndex,
     StorageContext,
     Settings,
-    KnowledgeGraphIndex,
     get_response_synthesizer,
 )
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.core.response_synthesizers import TreeSummarize
 
 # Load environment variables
 load_dotenv()
+
+# Configure LlamaIndex settings
+Settings.llm = OpenAI(model="gpt-4")
+Settings.embed_model = OpenAIEmbedding()
+Settings.chunk_size = 512
 
 # Check for OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
     st.error("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
     st.stop()
-
-# Configure LlamaIndex settings
-Settings.llm = OpenAI(
-    model="gpt-4o",
-    temperature=0,
-    system_prompt=(
-        "You are a helpful assistant that answers questions based on the knowledge graph. "
-        "Always try to use the relationships and information from the graph in your answers. "
-        "If you find relevant information, explain it clearly. "
-        "If you don't find relevant information, say so explicitly."
-    )
-)
-Settings.embed_model = OpenAIEmbedding()
-Settings.show_progress = True  # Enable progress indicators
 
 def process_uploaded_files(uploaded_files, document_dates):
     """Process uploaded files and return temporary file paths."""
@@ -196,6 +188,49 @@ def extract_entities_from_query(query: str, graph: nx.Graph) -> Set[str]:
     
     return entities
 
+def calculate_temporal_score(doc_date):
+    """Calculate a score multiplier based on document age."""
+    if not doc_date:
+        return 0.5  # Default score for documents without dates
+    
+    try:
+        doc_date = datetime.fromisoformat(doc_date).date()
+        today = date.today()
+        days_old = (today - doc_date).days
+        # Scale from 1.0 (newest) to 0.3 (oldest, 365+ days)
+        # This matches our visualization scaling
+        return max(0.3, 1.0 - min(days_old, 365) / 365)
+    except (ValueError, TypeError):
+        return 0.5
+
+class TemporalResponseSynthesizer(TreeSummarize):
+    """Custom response synthesizer that incorporates temporal weights."""
+    
+    def __init__(self, node_dates, **kwargs):
+        super().__init__(**kwargs)
+        self.node_dates = node_dates
+    
+    def _get_nodes_for_response(self, query_bundle, nodes):
+        """Override to incorporate temporal weighting into node selection."""
+        nodes_with_scores = []
+        for node in nodes:
+            # Get base relevance score
+            base_score = node.score if hasattr(node, 'score') else 0.0
+            
+            # Get temporal score
+            node_text = node.node.get_content().lower()
+            doc_date = self.node_dates.get(node_text)
+            temporal_score = calculate_temporal_score(doc_date)
+            
+            # Combine scores - multiply base score by temporal factor
+            final_score = base_score * temporal_score
+            node.score = final_score
+            nodes_with_scores.append(node)
+        
+        # Sort by combined score
+        nodes_with_scores.sort(key=lambda x: x.score, reverse=True)
+        return nodes_with_scores
+
 def main():
     st.set_page_config(page_title="GraphRAG Explorer", layout="wide")
     
@@ -272,8 +307,16 @@ def main():
                         kg_index, node_dates = load_and_process_markdown(st.session_state.file_info_list)
                         st.session_state.kg_index = kg_index
                         st.session_state.graph = st.session_state.kg_index.get_networkx_graph()
+                        
+                        # Create custom response synthesizer with temporal weighting
+                        response_synthesizer = TemporalResponseSynthesizer(
+                            node_dates=node_dates
+                        )
+                        
+                        # Configure query engine with temporal weighting
                         st.session_state.query_engine = st.session_state.kg_index.as_query_engine(
                             response_mode="tree_summarize",
+                            response_synthesizer=response_synthesizer,
                         )
                         st.session_state.node_dates = node_dates
                         

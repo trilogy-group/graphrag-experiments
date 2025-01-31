@@ -8,6 +8,9 @@ An experimental project for building and querying knowledge graphs from markdown
 - Interactive visualization using Streamlit and Pyvis
 - Query the knowledge graph using natural language
 - Highlight relevant nodes and relationships in the visualization
+- Temporal weighting of nodes based on document age
+
+For detailed information about the system architecture and implementation, see [architecture.md](architecture.md).
 
 ## Setup
 
