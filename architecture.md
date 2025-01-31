@@ -118,8 +118,6 @@ graph TD
 
 ## Future Enhancements
 
-Potential areas for improvement:
-- Caching of embeddings for faster graph construction
-- Hybrid retrieval combining graph traversal with vector similarity
-- Advanced relationship extraction techniques
-- Enhanced visualization capabilities
+The current implementation of the system incorporates a basic temporal knowledge graph (TKG) by associating temporal metadata, such as document ingestion dates, with nodes to track when information was added to the graph. While this provides foundational temporal context for data provenance and versioning, it does not yet model time as an inherent part of the domain knowledge itself.
+
+To evolve into a true TKG, future enhancements would involve embedding temporal semantics directly into the graph's structure, such as timestamping edges with validity intervals (e.g., "CEO of Company X from 2015–2023"), enabling dynamic node attributes that reflect changes over time (e.g., fluctuating stock prices), and representing time-bound events as first-class entities (e.g., "Product Launch on 2024-05-01"). These improvements would allow the system to support complex temporal reasoning, such as querying historical states of relationships, analyzing trends, or inferring causality across time, transforming the graph into a robust tool for understanding evolving real-world dynamics.
