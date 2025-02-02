@@ -5,6 +5,9 @@ import shutil
 from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import tenacity
+from openai import OpenAI as OpenAIClient, RateLimitError
 
 import streamlit as st
 import networkx as nx
@@ -17,6 +20,7 @@ from llama_index.core import (
     StorageContext,
     Settings,
     get_response_synthesizer,
+    ServiceContext
 )
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.llms.openai import OpenAI
@@ -26,10 +30,37 @@ from llama_index.core.response_synthesizers import TreeSummarize
 # Load environment variables
 load_dotenv()
 
-# Configure LlamaIndex settings
-Settings.llm = OpenAI(model="gpt-4o-mini")
-Settings.embed_model = OpenAIEmbedding()
-Settings.chunk_size = 512
+# Configure OpenAI client with retries and rate limiting
+def create_openai_client():
+    return OpenAIClient(
+        timeout=60.0,  # 60 second timeout
+        max_retries=5,  # Retry failed requests up to 5 times
+        # Default exponential backoff: ~2^n seconds between retries
+    )
+
+# Configure retry strategy for LlamaIndex
+retry_decorator = tenacity.retry(
+    wait=tenacity.wait_exponential(multiplier=1, min=4, max=10),  # Wait between 4 and 10 seconds
+    stop=tenacity.stop_after_attempt(5),  # Stop after 5 attempts
+    retry=tenacity.retry_if_exception_type(RateLimitError),  # Only retry rate limit errors
+)
+
+# Configure LlamaIndex settings with retries and parallel processing
+Settings.llm = OpenAI(
+    model="gpt-4o-mini",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    max_retries=5,
+    timeout=60,
+    retry_decorator=retry_decorator,
+)
+Settings.embed_model = OpenAIEmbedding(
+    api_key=os.getenv("OPENAI_API_KEY"),
+    max_retries=5,
+    timeout=60,
+    retry_decorator=retry_decorator,
+)
+Settings.chunk_size = 1024
+Settings.chunk_overlap = 128  # Add overlap between chunks to maintain context
 
 # Check for OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
@@ -41,13 +72,12 @@ def process_uploaded_files(uploaded_files, document_dates):
     temp_dir = tempfile.mkdtemp()
     temp_files = []
     
-    for file, doc_date in zip(uploaded_files, document_dates):
-        # Save to temporary file
-        temp_path = os.path.join(temp_dir, file.name)
-        with open(temp_path, "wb") as f:
-            f.write(file.getvalue())
+    for uploaded_file, doc_date in zip(uploaded_files, document_dates):
+        file_path = os.path.join(temp_dir, uploaded_file.name)
+        with open(file_path, 'wb') as f:
+            f.write(uploaded_file.getvalue())
         temp_files.append({
-            'path': temp_path,
+            'path': file_path,
             'date': doc_date
         })
     
@@ -74,10 +104,12 @@ def load_and_process_markdown(file_info_list):
     kg_index = KnowledgeGraphIndex.from_documents(
         documents,
         storage_context=storage_context,
-        max_triplets_per_chunk=20,
-        include_embeddings=True,  # Enable embeddings for better semantic search
+        max_triplets_per_chunk=None,  # Let LlamaIndex determine optimal number
+        include_embeddings=True,
         show_progress=True,
         include_metadata=True,
+        # Configure triplet extraction
+        kg_triple_extract_template="Extract relevant relationships from the text. Only extract relationships that are explicitly stated. Do not infer relationships. Extract as many or as few as are appropriate for the content.",
     )
     
     # Get the graph and add dates to all nodes
