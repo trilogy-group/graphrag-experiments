@@ -3,15 +3,12 @@ import sys
 import tempfile
 import shutil
 from pathlib import Path
-from typing import List, Optional, Set
 from datetime import datetime, date
-
-# Add the project root to Python path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
-from pyvis.network import Network
 import networkx as nx
+from pyvis.network import Network
 from dotenv import load_dotenv
 
 from llama_index.core import (
@@ -30,7 +27,7 @@ from llama_index.core.response_synthesizers import TreeSummarize
 load_dotenv()
 
 # Configure LlamaIndex settings
-Settings.llm = OpenAI(model="gpt-4")
+Settings.llm = OpenAI(model="gpt-4o-mini")
 Settings.embed_model = OpenAIEmbedding()
 Settings.chunk_size = 512
 
@@ -78,7 +75,7 @@ def load_and_process_markdown(file_info_list):
         documents,
         storage_context=storage_context,
         max_triplets_per_chunk=20,
-        include_embeddings=True,
+        include_embeddings=True,  # Enable embeddings for better semantic search
         show_progress=True,
         include_metadata=True,
     )
@@ -177,7 +174,7 @@ def create_pyvis_graph(G, query=None, response_nodes=None, node_dates=None):
     
     return net
 
-def extract_entities_from_query(query: str, graph: nx.Graph) -> Set[str]:
+def extract_entities_from_query(query: str, graph: nx.Graph) -> set:
     """Extract mentioned entities from query that exist in the graph."""
     entities = set()
     query_lower = query.lower()

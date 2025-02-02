@@ -15,27 +15,37 @@ GraphRAG combines knowledge graph construction with retrieval-augmented generati
   - Triplet generation (subject, predicate, object)
 
 ### 2. Knowledge Graph Construction
-- `KnowledgeGraphIndex` creates a NetworkX graph from extracted triplets
-- Nodes represent entities from the documents
-- Edges represent relationships with predicates as relationship types
-- Original context is preserved in node metadata
-- Node embeddings assist in relationship identification during construction
 
-### 3. Embedding Layer
-- OpenAI's embedding model generates vector representations for nodes
-- Embeddings are used during graph construction to:
-  - Help identify potential relationships
-  - Support entity disambiguation
-  - Enhance relationship extraction
+The knowledge graph is constructed using the following process:
 
-### 4. Query Processing
-- Analyzes input questions for entity mentions
-- Uses graph-based retrieval:
-  - Identifies mentioned entities
-  - Traverses graph to find connected nodes
-  - Scores relevance based on graph structure
+1. **Document Processing**: Each markdown document is processed and split into chunks
+2. **Triplet Extraction**: The LLM extracts subject-predicate-object triplets from each chunk using a prompt template
+3. **Graph Construction**: The triplets are used to build the graph structure, with nodes representing entities and edges representing relationships
+4. **Temporal Metadata**: Each node is associated with its document's ingestion date
+5. **Semantic Embeddings**: Each triplet is embedded using OpenAI's embedding model
+   - These embeddings enable semantic search during query time
+   - They are not used in graph construction, but are crucial for retrieval
 
-### 5. Response Generation
+### 3. Query Processing
+
+Queries are processed using:
+1. **Initial Retrieval** (Hybrid Mode):
+   - **Keyword Matching**: Finds triplets containing exact matches to query terms
+   - **Semantic Search**: Uses triplet embeddings to find semantically similar relationships
+   - The system automatically combines both approaches when embeddings are available
+   
+2. **Temporal Weighting**:
+   - Retrieved nodes are scored based on their document age
+   - More recent documents receive higher weights
+   - Our custom `TemporalResponseSynthesizer` applies this weighting
+
+3. **Response Generation**:
+   - The LLM generates a natural language response using:
+     - The retrieved graph context
+     - The original query
+     - The temporal relevance scores
+
+### 4. Response Generation
 - Collects relevant nodes and relationships from graph traversal
 - Formats subgraph information into LLM prompt
 - Generates natural language response using:
@@ -59,8 +69,9 @@ graph TD
 
     subgraph "Knowledge Graph Construction"
         KG[Knowledge Graph Index]
-        EM[Embedding Model<br/>OpenAI]
         TR --> KG
+        EM[Embedding Model<br/>OpenAI]
+        TR --> EM
         EM --> KG
     end
 
@@ -68,6 +79,8 @@ graph TD
         QA[Query Analysis] --> ER[Entity Recognition]
         ER --> KG
         KG --> GT[Graph Traversal]
+        GT --> HM[Hybrid Mode Retriever]
+        HM --> TW[Temporal Weighting]
     end
 
     subgraph "Response Generation"
@@ -80,9 +93,11 @@ graph TD
     MD --> DR
 
     style KG fill:#f9f,stroke:#333,stroke-width:2px
-    style EM fill:#bbf,stroke:#333,stroke-width:2px
     style EE fill:#bfb,stroke:#333,stroke-width:2px
     style LLM fill:#bfb,stroke:#333,stroke-width:2px
+    style EM fill:#bbf,stroke:#333,stroke-width:2px
+    style HM fill:#bfb,stroke:#333,stroke-width:2px
+    style TW fill:#fbf,stroke:#333,stroke-width:2px
 ```
 
 ## Data Flow
@@ -93,13 +108,13 @@ graph TD
 
 2. **Processing Stage**
    - Entities and relationships are extracted
-   - Node embeddings are generated
-   - Knowledge graph is constructed using both explicit relationships and embedding-assisted relationship identification
+   - Knowledge graph is constructed using both explicit relationships and temporal metadata
+   - Triplets are embedded for semantic search
 
 3. **Query Stage**
    - User submits natural language query
    - Query is analyzed for entities
-   - Graph is traversed to find relevant subgraph
+   - Graph is traversed to find relevant subgraph using hybrid retrieval
 
 4. **Response Stage**
    - Subgraph is formatted into prompt
@@ -108,7 +123,6 @@ graph TD
 
 ## Performance Considerations
 
-- Embedding generation is computationally intensive but only needed during graph construction
 - Initial graph construction requires multiple API calls for:
   - Entity extraction
   - Relationship identification
