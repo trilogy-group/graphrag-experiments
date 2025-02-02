@@ -4,7 +4,7 @@ import tempfile
 import shutil
 from pathlib import Path
 from datetime import datetime, date
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tenacity
 from openai import OpenAI as OpenAIClient, RateLimitError
@@ -20,8 +20,11 @@ from llama_index.core import (
     StorageContext,
     Settings,
     get_response_synthesizer,
-    ServiceContext
+    ServiceContext,
 )
+from llama_index.core.callbacks import CallbackManager
+from llama_index.core.callbacks.base_handler import BaseCallbackHandler
+from llama_index.core.callbacks.base import CBEventType
 from llama_index.core.node_parser import SimpleNodeParser
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -83,73 +86,205 @@ def process_uploaded_files(uploaded_files, document_dates):
     
     return temp_files, temp_dir
 
+class ProgressCallbackHandler(BaseCallbackHandler):
+    """Callback handler to track progress and display sample triplets."""
+    
+    def __init__(self):
+        # Initialize with empty sets since we want to handle all events
+        self.event_starts_to_ignore = set()
+        self.event_ends_to_ignore = set()
+        self.progress_bar = st.progress(0)
+        self.status_container = st.empty()
+        self.header_placeholder = st.empty()  # For the sample pane header
+        self.graph_placeholder = st.empty()  # Container to hold the graph location
+        self.total_chunks = 17  # We know there are 17 chunks
+        self.processed_chunks = 0
+        self.sample_triplets = []
+        self.status_container.text(f"Processing {self.total_chunks} chunks...")
+        
+    def _create_network_viz(self, triplets):
+        """Create a network visualization of the triplets using NetworkX and Pyvis."""
+        import networkx as nx
+        from pyvis.network import Network
+        import tempfile
+        import os
+        
+        # Create a new directed graph
+        G = nx.DiGraph()
+        
+        # Add nodes and edges for each triplet
+        for s, p, o in triplets:
+            # Clean node names
+            s_clean = s.replace('"', '').replace("'", "")[:50]  # Truncate long names
+            o_clean = o.replace('"', '').replace("'", "")[:50]
+            p_clean = p.replace('"', '').replace("'", "")[:30]
+            
+            # Add nodes with styling
+            G.add_node(s_clean, color='lightblue', shape='box')
+            G.add_node(o_clean, color='lightgreen', shape='box')
+            G.add_edge(s_clean, o_clean, title=p_clean)
+        
+        # Convert to Pyvis network with remote CDN
+        net = Network(notebook=True, directed=True, height="400px", width="100%", cdn_resources='remote')
+        net.from_nx(G)
+        
+        # Set options for better visualization
+        net.set_options("""
+        var options = {
+            "nodes": {
+                "font": {"size": 16},
+                "shape": "box",
+                "shadow": true
+            },
+            "edges": {
+                "font": {"size": 14},
+                "arrows": {"to": {"enabled": true}},
+                "color": {"inherit": false},
+                "smooth": {"type": "curvedCW", "roundness": 0.2}
+            },
+            "physics": {
+                "barnesHut": {"gravitationalConstant": -15000},
+                "stabilization": {"iterations": 50}
+            }
+        }
+        """)
+        
+        # Save to a temporary file and read back
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as f:
+            net.save_graph(f.name)
+            with open(f.name, 'r', encoding='utf-8') as f:
+                html_content = f.read()
+            os.unlink(f.name)  # Clean up temp file
+            
+        return html_content
+        
+    def start_trace(self, trace_id: Optional[str] = None) -> None:
+        """Start a trace - required abstract method."""
+        pass
+
+    def end_trace(
+        self,
+        trace_id: Optional[str] = None,
+        trace_map: Optional[Dict[str, List[str]]] = None,
+    ) -> None:
+        """End a trace - required abstract method."""
+        pass
+        
+    def on_event_start(self, event_type: CBEventType, payload: Optional[Dict[str, Any]] = None, event_id: Optional[str] = None, **kwargs: Any) -> None:
+        """Handle the start of an event."""
+        if event_type == CBEventType.EMBEDDING:
+            if self.processed_chunks == 0:
+                self.status_container.text(f"Extracting triplets and generating embeddings for {self.total_chunks} chunks...")
+    
+    def on_event_end(self, event_type: CBEventType, payload: Optional[Dict[str, Any]] = None, event_id: Optional[str] = None, **kwargs: Any) -> None:
+        """Handle the end of an event."""
+        if event_type == CBEventType.LLM:
+            if payload and "response" in payload:
+                response = str(payload["response"])
+                # Look for triplets in the response
+                lines = response.split('\n')
+                for line in lines:
+                    if '(' in line and ')' in line:
+                        # Extract the triplet text between parentheses
+                        triplet_text = line[line.find("(")+1:line.find(")")]
+                        parts = [p.strip() for p in triplet_text.split(",")]
+                        if len(parts) == 3:
+                            # Add triplet and update visualization immediately
+                            self.sample_triplets.append(tuple(parts))
+                            if len(self.sample_triplets) > 15:  # Keep last 15 triplets
+                                self.sample_triplets = self.sample_triplets[-15:]
+                            
+                            # Update network visualization with header
+                            if len(self.sample_triplets) > 0:
+                                self.header_placeholder.markdown("### Sample Triplets Extracted")
+                                html_content = self._create_network_viz(self.sample_triplets[-5:])  # Show last 5 triplets
+                                with self.graph_placeholder:
+                                    st.components.v1.html(html_content, height=400, scrolling=True)
+
+        elif event_type == CBEventType.EMBEDDING:
+            if payload and "chunks" in payload:
+                chunks = payload["chunks"]
+                if isinstance(chunks, list):
+                    self.processed_chunks += 1
+                    progress = min(self.processed_chunks / self.total_chunks, 1.0)
+                    self.progress_bar.progress(progress)
+                    self.status_container.text(f"Processing {self.processed_chunks}/{self.total_chunks} chunks")
+                    
+                    # Clear sample pane when processing is complete
+                    if self.processed_chunks == self.total_chunks:
+                        self.header_placeholder.empty()
+                        self.graph_placeholder.empty()
+                    
 def load_and_process_markdown(file_info_list):
     """Load and process markdown files into a knowledge graph."""
-    # Create storage context
-    storage_context = StorageContext.from_defaults()
-    
-    # Load documents with metadata
-    documents = []
-    for file_info in file_info_list:
-        reader = SimpleDirectoryReader(
-            input_files=[file_info['path']],
-        )
-        docs = reader.load_data()
-        # Add document date to metadata
-        for doc in docs:
-            doc.metadata["document_date"] = file_info['date'].isoformat()
-        documents.extend(docs)
-    
-    # Create knowledge graph
-    kg_index = KnowledgeGraphIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        max_triplets_per_chunk=None,  # Let LlamaIndex determine optimal number
-        include_embeddings=True,
-        show_progress=True,
-        include_metadata=True,
-        # Configure triplet extraction
-        kg_triple_extract_template="Extract relevant relationships from the text. Only extract relationships that are explicitly stated. Do not infer relationships. Extract as many or as few as are appropriate for the content.",
-    )
-    
-    # Get the graph and add dates to all nodes
-    graph = kg_index.get_networkx_graph()
-    
-    # Create a mapping of text to dates
-    text_to_date = {}
-    for doc in documents:
-        doc_date = doc.metadata.get("document_date")
-        if doc_date:
-            text_to_date[doc.text] = doc_date
-            text_to_date[doc.text.lower()] = doc_date
-    
-    # Store dates in a global dictionary that we can access during visualization
-    node_dates = {}
-    
-    # Update node attributes with dates
-    nodes_with_dates = 0
-    for node_id in graph.nodes():
-        node_str = str(node_id).lower()
-        # Try to find a matching document
-        for text, date in text_to_date.items():
-            if node_str in text.lower():
-                node_dates[node_str] = date
-                nodes_with_dates += 1
-                break
-    
-    # Update the graph in the index
-    kg_index._graph = graph
-    
-    return kg_index, node_dates
+    try:
+        # Initialize callback handler for progress tracking
+        progress_handler = ProgressCallbackHandler()
+        callback_manager = CallbackManager([progress_handler])
 
-def extract_source_node_texts(response):
-    """Extract source node texts from response in a clean way."""
-    source_nodes = []
-    if hasattr(response, 'source_nodes'):
-        source_nodes = [n.node.get_content() for n in response.source_nodes]
-    elif hasattr(response, 'metadata') and 'source_nodes' in response.metadata:
-        source_nodes = [n.node.get_content() for n in response.metadata['source_nodes']]
-    return source_nodes
+        # Configure global settings
+        Settings.callback_manager = callback_manager
+
+        # Load documents with metadata
+        documents = []
+        for file_info in file_info_list:
+            reader = SimpleDirectoryReader(
+                input_files=[file_info['path']],
+            )
+            docs = reader.load_data()
+            # Add document date to metadata
+            for doc in docs:
+                doc.metadata["document_date"] = file_info['date'].isoformat()
+            documents.extend(docs)
+        
+        # Create storage context
+        storage_context = StorageContext.from_defaults()
+        
+        # Create the knowledge graph index
+        kg_index = KnowledgeGraphIndex.from_documents(
+            documents,
+            storage_context=storage_context,
+            max_triplets_per_chunk=None,  # Let LlamaIndex determine optimal number
+            include_embeddings=True,
+            show_progress=True,
+            include_metadata=True,
+            # Configure triplet extraction
+            kg_triple_extract_template="Extract relevant relationships from the text. Only extract relationships that are explicitly stated. Do not infer relationships. Extract as many or as few as are appropriate for the content.",
+        )
+        
+        # Get the graph and add dates to all nodes
+        graph = kg_index.get_networkx_graph()
+        
+        # Create a mapping of text to dates
+        text_to_date = {}
+        for doc in documents:
+            doc_date = doc.metadata.get("document_date")
+            if doc_date:
+                text_to_date[doc.text] = doc_date
+                text_to_date[doc.text.lower()] = doc_date
+        
+        # Store dates in a global dictionary that we can access during visualization
+        node_dates = {}
+        
+        # Update node attributes with dates
+        nodes_with_dates = 0
+        for node_id in graph.nodes():
+            node_str = str(node_id).lower()
+            # Try to find a matching document
+            for text, date in text_to_date.items():
+                if node_str in text.lower():
+                    node_dates[node_str] = date
+                    nodes_with_dates += 1
+                    break
+        
+        # Update the graph in the index
+        kg_index._graph = graph
+        
+        return kg_index, node_dates
+    
+    except Exception as e:
+        st.error(f"Error processing files: {str(e)}")
+        raise
 
 def create_pyvis_graph(G, query=None, response_nodes=None, node_dates=None):
     """Create a Pyvis network visualization."""
@@ -367,7 +502,7 @@ def main():
                     response = st.session_state.query_engine.query(query)
                     
                     # Extract source nodes and clean up the response
-                    source_nodes = extract_source_node_texts(response)
+                    source_nodes = []
                     
                     # Display response
                     st.markdown("### Answer")
@@ -382,7 +517,7 @@ def main():
                     net.save_graph("/tmp/graph.html")
                     with open("/tmp/graph.html", 'r', encoding='utf-8') as f:
                         html = f.read()
-                        st.components.v1.html(html, height=600)
+                        st.components.v1.html(html, height=600, scrolling=True)
             else:
                 # Display initial graph
                 st.subheader("Knowledge Graph Visualization")
@@ -391,7 +526,7 @@ def main():
                 net.save_graph("/tmp/graph.html")
                 with open("/tmp/graph.html", 'r', encoding='utf-8') as f:
                     html = f.read()
-                    st.components.v1.html(html, height=600)
+                    st.components.v1.html(html, height=600, scrolling=True)
 
 if __name__ == "__main__":
     main()
